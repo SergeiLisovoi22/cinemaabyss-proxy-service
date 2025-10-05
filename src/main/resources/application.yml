@@ -1,0 +1,11 @@
+spring:
+  application:
+    name: cinemaabyss-proxy-service
+
+server:
+  port: 8000
+
+proxy:
+  cinemaabyss-main-url: http://localhost:8100/main-monolith
+  cinemaabyss-movies-url: http://localhost:8200/movies-service
+  cinemaabyss-proxy-enabled: true
