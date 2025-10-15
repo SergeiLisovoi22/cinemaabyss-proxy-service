@@ -7,6 +7,7 @@ COPY gradlew gradlew.bat /app/
 COPY gradle /app/gradle
 COPY build.gradle.kts settings.gradle.kts /app/
 
+RUN chmod +x gradlew
 RUN --mount=type=cache,target=/root/.gradle ./gradlew --version
 
 COPY src /app/src
