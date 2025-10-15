@@ -1,0 +1,9 @@
+package com.cinemaabyss.proxy_service.controller;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public record HealthStatusDto(
+        boolean status
+) {}
+

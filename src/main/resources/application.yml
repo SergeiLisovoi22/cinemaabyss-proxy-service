@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: cinemaabyss-proxy-service
+  cloud:
+    gateway:
+      routes:
+        - id: users
+          uri: ${MONOLITH_URL:http://monolith:8080}
+          predicates:
+            - Path=/api/users/**
+          filters:
+            - StripPrefix=0
+
+server:
+  port: ${SERVER_PORT:8000}
+
+proxy:
+  cinemaabyss-main-url: ${MONOLITH_URL:http://monolith:8080}
+  cinemaabyss-movies-url: ${MOVIES_SERVICE_URL:http://movies-service:8081}
+  cinemaabyss-events-url: ${EVENTS_SERVICE_URL:http://events-service:8082}
+  cinemaabyss-proxy-enabled: true
