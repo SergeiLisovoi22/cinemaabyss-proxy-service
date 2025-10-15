@@ -7,9 +7,7 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
-import java.util.Collections;
-import java.util.Enumeration;
-import java.util.List;
+import java.util.*;
 
 @Slf4j
 @Service
@@ -19,118 +17,87 @@ public class ProxyService {
     private final RestClient restClient;
     private final RoutingStrategy routingStrategy;
 
-    /**
-     * Проксирует запрос к целевому сервису
-     */
-    public ResponseEntity<Object> proxyRequest(
-            HttpServletRequest request,
-            String resourceType,
-            String path,
-            Object body) {
-
-        String targetUrl = routingStrategy.getTargetUrl(resourceType);
-        String fullUrl = buildFullUrl(targetUrl, path, request.getQueryString());
-
-        log.info("Proxying {} request to: {}", request.getMethod(), fullUrl);
+    public ResponseEntity<Object> proxyRequest(HttpServletRequest request,
+                                               String resourceType,
+                                               String path,
+                                               Object body) {
+        final String baseUrl = routingStrategy.getTargetUrl(resourceType);
+        final String fullUrl = buildFullUrl(baseUrl, path, request.getQueryString());
+        log.info("Proxy {} {} -> {}", request.getMethod(), path, fullUrl);
 
         try {
-            HttpHeaders headers = extractHeaders(request);
+            HttpHeaders fwdHeaders = extractHeaders(request); // входящие заголовки
 
-            ResponseEntity<Object> response = switch (request.getMethod().toUpperCase()) {
-                case "GET" -> executeGet(fullUrl, headers);
-                case "POST" -> executePost(fullUrl, headers, body);
-                case "PUT" -> executePut(fullUrl, headers, body);
-                case "DELETE" -> executeDelete(fullUrl, headers);
-                case "PATCH" -> executePatch(fullUrl, headers, body);
-                default -> ResponseEntity
-                        .status(HttpStatus.METHOD_NOT_ALLOWED)
-                        .body("Method not supported");
+            // выполняем запрос вверх и получаем ТЕКСТ
+            ResponseEntity<String> upstream = switch (request.getMethod().toUpperCase()) {
+                case "GET"    -> restClient.get().uri(fullUrl).headers(h -> h.addAll(fwdHeaders)).retrieve().toEntity(String.class);
+                case "POST"   -> restClient.post().uri(fullUrl).headers(h -> h.addAll(fwdHeaders))
+                        .body(body != null ? body : "").retrieve().toEntity(String.class);
+                case "PUT"    -> restClient.put().uri(fullUrl).headers(h -> h.addAll(fwdHeaders))
+                        .body(body != null ? body : "").retrieve().toEntity(String.class);
+                case "DELETE" -> restClient.delete().uri(fullUrl).headers(h -> h.addAll(fwdHeaders)).retrieve().toEntity(String.class);
+                case "PATCH"  -> restClient.patch().uri(fullUrl).headers(h -> h.addAll(fwdHeaders))
+                        .body(body != null ? body : "").retrieve().toEntity(String.class);
+                default -> ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body("Method not supported");
             };
 
-            log.info("Response from target service: status={}", response.getStatusCode());
-            return response;
+            // готовим ответ вниз: переносим безопасные заголовки + тело как пришло
+            HttpHeaders downHeaders = filterDownstreamHeaders(upstream.getHeaders());
+            // гарантируем правильный content-type (если не пришёл) — тесты ждут JSON
+            downHeaders.putIfAbsent(HttpHeaders.CONTENT_TYPE, List.of(MediaType.APPLICATION_JSON_VALUE));
+
+            return ResponseEntity.status(upstream.getStatusCode())
+                    .headers(downHeaders)
+                    .body(upstream.getBody());
 
         } catch (Exception e) {
-            log.error("Error proxying request to {}: {}", fullUrl, e.getMessage(), e);
-            return ResponseEntity
-                    .status(HttpStatus.BAD_GATEWAY)
-                    .body("Error communicating with backend service: " + e.getMessage());
+            log.error("Proxy error to {}: {}", fullUrl, e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                    .body("{\"error\":\"" + e.getMessage() + "\"}");
         }
     }
 
-    private String buildFullUrl(String baseUrl, String path, String queryString) {
-        String url = baseUrl + path;
-        if (queryString != null && !queryString.isEmpty()) {
-            url += "?" + queryString;
-        }
-        return url;
+    /* helpers */
+
+    private String buildFullUrl(String baseUrl, String path, String query) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(stripTrailingSlash(baseUrl)).append(path);
+        if (query != null && !query.isEmpty()) sb.append('?').append(query);
+        return sb.toString();
+    }
+
+    private String stripTrailingSlash(String s) {
+        if (s == null) return "";
+        return s.endsWith("/") ? s.substring(0, s.length() - 1) : s;
     }
 
     private HttpHeaders extractHeaders(HttpServletRequest request) {
         HttpHeaders headers = new HttpHeaders();
-        Enumeration<String> headerNames = request.getHeaderNames();
-
-        while (headerNames.hasMoreElements()) {
-            String headerName = headerNames.nextElement();
-            // Пропускаем заголовки, которые не должны проксироваться
-            if (shouldSkipHeader(headerName)) {
-                continue;
-            }
-            List<String> headerValues = Collections.list(request.getHeaders(headerName));
-            headers.addAll(headerName, headerValues);
+        Enumeration<String> names = request.getHeaderNames();
+        while (names.hasMoreElements()) {
+            String name = names.nextElement();
+            if (shouldSkipInboundHeader(name)) continue;
+            headers.addAll(name, Collections.list(request.getHeaders(name)));
         }
-
+        // уменьшаем шанс проблем с компрессией/соединением
+        headers.remove(HttpHeaders.ACCEPT_ENCODING);
+        headers.set(HttpHeaders.CONNECTION, "close");
         return headers;
     }
 
-    private boolean shouldSkipHeader(String headerName) {
-        String lowerName = headerName.toLowerCase();
-        return lowerName.equals("host") ||
-                lowerName.equals("content-length") ||
-                lowerName.equals("transfer-encoding");
+    private boolean shouldSkipInboundHeader(String name) {
+        String n = name.toLowerCase();
+        return n.equals("host") || n.equals("content-length") || n.equals("transfer-encoding");
     }
 
-    private ResponseEntity<Object> executeGet(String url, HttpHeaders headers) {
-        return restClient.get()
-                .uri(url)
-                .headers(h -> h.addAll(headers))
-                .retrieve()
-                .toEntity(Object.class);
-    }
-
-    private ResponseEntity<Object> executePost(String url, HttpHeaders headers, Object body) {
-        return restClient.post()
-                .uri(url)
-                .headers(h -> h.addAll(headers))
-                .body(body != null ? body : "")
-                .retrieve()
-                .toEntity(Object.class);
-    }
-
-    private ResponseEntity<Object> executePut(String url, HttpHeaders headers, Object body) {
-        return restClient.put()
-                .uri(url)
-                .headers(h -> h.addAll(headers))
-                .body(body != null ? body : "")
-                .retrieve()
-                .toEntity(Object.class);
-    }
-
-    private ResponseEntity<Object> executeDelete(String url, HttpHeaders headers) {
-        return restClient.delete()
-                .uri(url)
-                .headers(h -> h.addAll(headers))
-                .retrieve()
-                .toEntity(Object.class);
-    }
-
-    private ResponseEntity<Object> executePatch(String url, HttpHeaders headers, Object body) {
-        return restClient.patch()
-                .uri(url)
-                .headers(h -> h.addAll(headers))
-                .body(body != null ? body : "")
-                .retrieve()
-                .toEntity(Object.class);
+    private HttpHeaders filterDownstreamHeaders(HttpHeaders upstream) {
+        HttpHeaders h = new HttpHeaders();
+        upstream.forEach((k, v) -> {
+            String n = k.toLowerCase();
+            if (n.equals("content-length") || n.equals("transfer-encoding") || n.equals("connection")) return;
+            h.put(k, v);
+        });
+        h.set(HttpHeaders.CONNECTION, "close");
+        return h;
     }
 }
-

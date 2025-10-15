@@ -11,5 +11,6 @@ public class ProxyConfigurationProperties {
 
     private String cinemaabyssMainUrl;
     private String cinemaabyssMoviesUrl;
+    private String cinemaabyssEventsUrl;
     private boolean cinemaabyssProxyEnabled;
 }

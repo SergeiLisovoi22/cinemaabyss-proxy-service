@@ -13,11 +13,30 @@ public class RoutingStrategy {
     private final ProxyConfiguration proxyConfiguration;
 
     public String getTargetUrl(String resourceType) {
+        final var props = proxyConfiguration.getProperties();
+
+        // Если миграция выключена — всё проксируем в монолит
         if (!proxyConfiguration.isMigrationEnabled()) {
-            return proxyConfiguration.getProperties().getCinemaabyssMainUrl();
-        } else if("movies".equals(resourceType)) {
-            return proxyConfiguration.getProperties().getCinemaabyssMoviesUrl();
+            String url = props.getCinemaabyssMainUrl();
+            log.debug("Migration disabled -> route '{}' to MAIN: {}", resourceType, url);
+            return url;
         }
-        return proxyConfiguration.getProperties().getCinemaabyssMainUrl();
+
+        // Миграция включена — роутим точечно
+        if ("movies".equalsIgnoreCase(resourceType)) {
+            String url = props.getCinemaabyssMoviesUrl();
+            log.debug("Route '{}' to MOVIES: {}", resourceType, url);
+            return url;
+        }
+        if ("events".equalsIgnoreCase(resourceType)) {
+            String url = props.getCinemaabyssEventsUrl();
+            log.debug("Route '{}' to EVENTS: {}", resourceType, url);
+            return url;
+        }
+
+        // users и всё остальное по умолчанию — в монолит
+        String url = props.getCinemaabyssMainUrl();
+        log.debug("Route '{}' (default/users) to MAIN: {}", resourceType, url);
+        return url;
     }
 }
